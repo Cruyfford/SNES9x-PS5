@@ -3,7 +3,7 @@ Example ROM:  roms/Super Metroid (Japan, USA) (En,Ja).sfc
 
   boxart/Super Metroid (Japan, USA) (En,Ja).png   cover shown on the game tile
   snap/Super Metroid (Japan, USA) (En,Ja).png     picture behind the selected game
-  video/Super Metroid (Japan, USA) (En,Ja).ogv    preview video (coming in a later update)
+  video/Super Metroid (Japan, USA) (En,Ja).ogv    preview video (Ogg Theora, made with tools/preview-maker)
 
 PNG and JPG are supported for pictures.
 The libretro-thumbnails project uses this naming:

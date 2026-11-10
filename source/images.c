@@ -254,3 +254,18 @@ const image_t *image_load_now(const char *path)
     free(argb);
     return &s->img;
 }
+
+void image_forget(const char *path)
+{
+    for (int i = 0; i < nslots; i++)
+        if (slots[i].state != S_EMPTY && !strcmp(slots[i].path, path)) {
+            slots[i].gen++;              /* ignore a decode still in flight */
+            slots[i].state = S_EMPTY;
+            slots[i].path[0] = 0;
+        }
+    for (int k = 0; k < 3; k++) {
+        unsigned h = hash_str(path, k);
+        for (int i = 0; i < nfailed; i++)
+            if (failed[i] == h) { failed[i] = failed[--nfailed]; i--; }
+    }
+}

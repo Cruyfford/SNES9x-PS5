@@ -14,6 +14,11 @@ static entry_t entries[] = {
     {"backdrop", &cfg.backdrop, 0, 1},
     {"sort", &cfg.sort, 0, 1},
     {"last_game", &cfg.last_game, 0, 100000},
+    {"aspect", &cfg.aspect, 0, 2},
+    {"smooth", &cfg.smooth, 0, 1},
+    {"volume", &cfg.volume, 0, 4},
+    {"swap_ab", &cfg.swap_ab, 0, 1},
+    {"preview_video", &cfg.preview_video, 0, 1},
 };
 #define NENTRIES (int)(sizeof(entries) / sizeof(entries[0]))
 
@@ -24,6 +29,11 @@ void config_defaults(void)
     cfg.backdrop = BACKDROP_SNAP;
     cfg.sort = SORT_NAME;
     cfg.last_game = 0;
+    cfg.aspect = 0;
+    cfg.smooth = 0;
+    cfg.volume = 4;
+    cfg.swap_ab = 0;
+    cfg.preview_video = 1;
 }
 
 static void path(char *out, size_t n) { snprintf(out, n, "%s/config.ini", plat_data_dir()); }

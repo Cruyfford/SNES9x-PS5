@@ -18,7 +18,6 @@
 #include <pthread.h>
 #include <unistd.h>
 
-#define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "ext/stb_image_write.h"
 
 static float fb[SCREEN_W * SCREEN_H * 3];
@@ -78,7 +77,7 @@ static uint32_t script_buttons(int do_shots)
                         {"U", BTN_UP}, {"D", BTN_DOWN}, {"L", BTN_LEFT}, {"R", BTN_RIGHT},
                         {"X", BTN_CROSS}, {"O", BTN_CIRCLE}, {"S", BTN_SQUARE}, {"T", BTN_TRIANGLE},
                         {"L1", BTN_L1}, {"R1", BTN_R1}, {"L2", BTN_L2}, {"R2", BTN_R2},
-                        {"ST", BTN_START}, {"SE", BTN_SELECT}};
+                        {"ST", BTN_START}, {"SE", BTN_SELECT}, {"L3", BTN_L3}, {"R3", BTN_R3}};
                     for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++)
                         if (!strcmp(a, map[i].n)) b |= map[i].b;
                 }
@@ -102,8 +101,26 @@ void plat_gpu_sync(void) {}
 void plat_read_pad(pad_t *pad)
 {
     uint32_t b = script_buttons(0);
-    pad->held = b; pad->pressed = b; pad->cross_is_enter = 1;
+    static uint32_t hold_until[32];
+    /* game buttons are held for 10 frames so the emulated game sees them */
+    for (int i = 0; i < 32; i++) if (b & (1u << i)) hold_until[i] = (uint32_t)frame_no + 10;
+    uint32_t held = 0;
+    for (int i = 0; i < 32; i++) if (hold_until[i] > frame_no) held |= 1u << i;
+    pad->held = held; pad->pressed = b; pad->cross_is_enter = 1;
+    pad->port[0] = held; pad->port[1] = pad->port[2] = pad->port[3] = 0;
 }
+
+/* audio: count what would be played (800 frames per 60 Hz frame) */
+static long audio_q;
+static uint64_t audio_frame;
+int plat_audio_init(void) { return 0; }
+void plat_audio_write(const float *stereo, int frames) { (void)stereo; audio_q += frames; }
+int plat_audio_buffered(void)
+{
+    while (audio_frame < frame_no) { audio_q -= AUDIO_RATE / 60; if (audio_q < 0) audio_q = 0; audio_frame++; }
+    return (int)audio_q;
+}
+void plat_audio_clear(void) { audio_q = 0; }
 
 uint64_t plat_ms(void) { return frame_no * 1000 / 60; }
 
@@ -112,6 +129,7 @@ void plat_local_time(clock_t2 *o)
     o->year = 2026; o->month = 11; o->day = 10; o->hour = 16; o->minute = 41; o->second = 0;
 }
 int plat_use_24h(void) { return 0; }
+long plat_tz_offset(void) { return 0; }
 
 const char *plat_app_dir(void) { return app_dir; }
 const char *plat_data_dir(void) { return data_dir; }

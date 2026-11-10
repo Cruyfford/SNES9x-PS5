@@ -18,6 +18,8 @@ int  images_init(int synchronous);
  * Missing files are remembered so they are not retried. */
 int  image_get(const char *path, int kind, image_t *out);
 int  image_failed(const char *path, int kind);
+/* drop a cached picture (the file changed on disk) */
+void image_forget(const char *path);
 /* upload finished decodes; call once per frame before drawing */
 void images_update(void);
 /* load a small UI image synchronously (icons); returns NULL on failure */

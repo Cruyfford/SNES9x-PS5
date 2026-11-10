@@ -5,10 +5,13 @@
 #include "images.h"
 #include "library.h"
 #include "config.h"
+#include "emu.h"
+#include "video.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 
 /* ---------- palette ---------- */
 #define C_BG        RGBA(5, 7, 13, 255)
@@ -48,7 +51,7 @@ static void draw_icon(const char *name, float x, float y, float size, rgba_t c)
 }
 
 /* ---------- state ---------- */
-enum { SCR_HOME, SCR_SETTINGS };
+enum { SCR_HOME, SCR_SETTINGS, SCR_GAME };
 enum { FOC_TABS, FOC_TILES, FOC_BUTTONS };
 
 static library_t lib;
@@ -64,6 +67,8 @@ static float fade = 1.f;       /* 1 = fully visible */
 static uint64_t now_ms, sel_ms;
 
 static int bg_cur = -1, bg_prev = -1;
+static int vid_game = -1;
+static uint64_t vid_first_ms;
 static float bg_mix = 1.f;
 
 static struct { char icon[24], title[96], body[200]; uint64_t t0; int on; } toast;
@@ -80,7 +85,7 @@ typedef struct {
     char info[160];
 } row_t;
 typedef struct { const char *name, *icon; row_t rows[12]; int nrows; } cat_t;
-static cat_t cats[3];
+static cat_t cats[8];
 static int ncats;
 static int set_cat, set_row, set_focus_panel;
 
@@ -135,6 +140,8 @@ static float hints_width(const char *const *labels, int n)
     return w - 34;
 }
 
+static void start_game(void);
+
 /* ---------- library ---------- */
 static int cmp_region(const void *a, const void *b)
 {
@@ -171,33 +178,53 @@ static void act_rescan(void)
     ui_toast("refresh", "Library updated", b);
 }
 
+enum { CAT_DISPLAY, CAT_SOUND, CAT_CONTROLS, CAT_HOME, CAT_LIBRARY, CAT_SYSTEM, CAT_COUNT };
+static const char *const aspect_opts[] = {"4:3 (TV)", "8:7 (Pixel perfect)", "Stretch"};
+static const char *const volume_opts[] = {"Mute", "25%", "50%", "75%", "100%"};
+static const char *const layout_opts[] = {"Cross = B, Circle = A", "Cross = A, Circle = B"};
+
+static cat_t *new_cat(const char *name, const char *icon)
+{
+    cat_t *c = &cats[ncats++];
+    memset(c, 0, sizeof(*c));
+    c->name = name; c->icon = icon;
+    return c;
+}
+
 static void build_settings(void)
 {
     ncats = 0;
-    cat_t *c = &cats[ncats++];
-    memset(c, 0, sizeof(*c));
-    c->name = "Home Screen"; c->icon = "monitor";
+    cat_t *c = new_cat("Display & Video", "monitor");
+    c->rows[c->nrows++] = (row_t){"Aspect Ratio", "Shape of the game picture", ROW_OPTION, &cfg.aspect, aspect_opts, 3, 0, ""};
+    c->rows[c->nrows++] = (row_t){"Smooth Filtering", "Soften pixels instead of keeping them sharp", ROW_TOGGLE, &cfg.smooth, onoff_opts, 2, 0, ""};
+
+    c = new_cat("Sound", "sparkle");
+    c->rows[c->nrows++] = (row_t){"Game Volume", NULL, ROW_OPTION, &cfg.volume, volume_opts, 5, 0, ""};
+
+    c = new_cat("Controllers", "gamepad");
+    c->rows[c->nrows++] = (row_t){"Button Layout", "Square and Triangle follow the same swap", ROW_OPTION, &cfg.swap_ab, layout_opts, 2, 0, ""};
+    c->rows[c->nrows++] = (row_t){"In-Game Menu", "Save, load and quit while playing", ROW_INFO, 0, 0, 0, 0, "R3 or SELECT + START"};
+    c->rows[c->nrows++] = (row_t){"Player 2", "The second connected controller", ROW_INFO, 0, 0, 0, 0, "Automatic"};
+
+    c = new_cat("Home Screen", "grid");
     c->rows[c->nrows++] = (row_t){"Background", "Picture behind the selected game", ROW_OPTION, &cfg.backdrop, backdrop_opts, 2, 0, ""};
+    c->rows[c->nrows++] = (row_t){"Preview Videos", "Play art/video clips when a game is selected", ROW_TOGGLE, &cfg.preview_video, onoff_opts, 2, 0, ""};
     c->rows[c->nrows++] = (row_t){"Show Clock", NULL, ROW_TOGGLE, &cfg.show_clock, onoff_opts, 2, 0, ""};
     c->rows[c->nrows++] = (row_t){"Clock Format", NULL, ROW_OPTION, &cfg.clock_format, clock_opts, 3, 0, ""};
 
-    c = &cats[ncats++];
-    memset(c, 0, sizeof(*c));
-    c->name = "Game Library"; c->icon = "library";
+    c = new_cat("Game Library", "library");
     c->rows[c->nrows++] = (row_t){"Scan for Games", "Look for new ROMs and artwork", ROW_ACTION, 0, 0, 0, act_rescan, ""};
     c->rows[c->nrows++] = (row_t){"Sort Games By", NULL, ROW_OPTION, &cfg.sort, sort_opts, 2, 0, ""};
 
-    c = &cats[ncats++];
-    memset(c, 0, sizeof(*c));
-    c->name = "System"; c->icon = "info";
+    c = new_cat("System", "info");
     c->rows[c->nrows++] = (row_t){"Version", NULL, ROW_INFO, 0, 0, 0, 0, APP_VERSION};
-    c->rows[c->nrows++] = (row_t){"Playing Games", "The emulator core is added in the next update", ROW_INFO, 0, 0, 0, 0, "Next update"};
+    c->rows[c->nrows++] = (row_t){"Emulator Core", NULL, ROW_INFO, 0, 0, 0, 0, "Snes9x 2010"};
 }
 
 /* rows that depend on the library are refreshed every time settings opens */
 static void refresh_library_rows(void)
 {
-    cat_t *c = &cats[1];
+    cat_t *c = &cats[CAT_LIBRARY];
     c->nrows = 2;
     for (int i = 0; i < lib.ndirs && c->nrows < 12; i++) {
         row_t *r = &c->rows[c->nrows++];
@@ -206,7 +233,7 @@ static void refresh_library_rows(void)
         r->type = ROW_INFO;
         snprintf(r->info, sizeof(r->info), "%s", lib.dir_found[i] ? "Folder found" : "Not found");
     }
-    cat_t *s = &cats[2];
+    cat_t *s = &cats[CAT_SYSTEM];
     if (s->nrows < 3) {
         row_t *r = &s->rows[s->nrows++];
         memset(r, 0, sizeof(*r));
@@ -450,12 +477,26 @@ static void draw_cards(void)
     text_draw_fit(fonts[F_SUB], x + 24, y + 124, (g->cover[0] && g->backdrop[0]) ? "Artwork matched by file name" : "Add art in art/boxart, art/snap, art/video", C_FAINT, w + 62, ALIGN_LEFT);
     x += w + 110 + 22;
 
-    draw_card(x, y, w, h, "GAME FILE");
-    char sz[32];
-    fmt_size(g->size, sz, sizeof(sz));
-    text_draw(fonts[F_VALUE], x + 24, y + 62, sz, C_WHITE, 0, ALIGN_LEFT);
-    const char *fn = strrchr(g->path, '/');
-    text_draw_fit(fonts[F_SUB], x + 24, y + 112, fn ? fn + 1 : g->path, C_DIM, w - 48, ALIGN_LEFT);
+    draw_card(x, y, w, h, "SAVE STATES");
+    {
+        /* thumbnails of this game's save slots */
+        char tp[600];
+        int any = 0;
+        for (int sl = 0; sl < EMU_SLOTS; sl++) {
+            float tx = x + 24 + sl * 112, ty = y + 62;
+            snprintf(tp, sizeof(tp), "%s/saves/%s.state%d.png", plat_data_dir(), g->base, sl + 1);
+            image_t im;
+            if (image_get(tp, IMG_COVER, &im)) {
+                gfx_image_rr(im.tex, tx, ty, 100, 88, 10, 0, 0, im.u1, im.v1, C_WHITE);
+                any = 1;
+            } else {
+                gfx_rrect(tx, ty, 100, 88, 10, RGBA(255, 255, 255, 16));
+                char n[4]; snprintf(n, sizeof(n), "%d", sl + 1);
+                text_draw(fonts[F_SUB], tx + 50, ty + 30, n, C_FAINT, 0, ALIGN_CENTER);
+            }
+        }
+        (void)any;
+    }
     x += w + 22;
 
     draw_card(x, y, w, h, "LOCATION");
@@ -532,8 +573,14 @@ static void home_input(const pad_t *pad)
         if (p & BTN_RIGHT) btn_sel = 1;
         if (p & (BTN_UP | back_btn(pad))) focus = FOC_TILES;
         if (p & confirm_btn(pad)) {
-            if (btn_sel == 0) ui_toast("gamepad", "Coming in the next update", "Games will start from here once the emulator core is added.");
-            else ui_toast("info", lib.games[sel].title, lib.games[sel].path);
+            if (btn_sel == 0) start_game();
+            else {
+                char sz[32], b[200];
+                fmt_size(lib.games[sel].size, sz, sizeof(sz));
+                const char *fn = strrchr(lib.games[sel].path, '/');
+                snprintf(b, sizeof(b), "%s  ·  %s", fn ? fn + 1 : lib.games[sel].path, sz);
+                ui_toast("info", lib.games[sel].title, b);
+            }
         }
         return;
     }
@@ -547,7 +594,7 @@ static void home_input(const pad_t *pad)
     if (sel != old) sel_ms = now_ms;
     if (p & BTN_UP) { focus = FOC_TABS; tab = 0; }
     if (p & BTN_DOWN) { focus = FOC_BUTTONS; btn_sel = 0; }
-    if (p & confirm_btn(pad)) ui_toast("gamepad", "Coming in the next update", "Games will start from here once the emulator core is added.");
+    if (p & confirm_btn(pad)) start_game();
 }
 
 static void home_update(float dt)
@@ -564,6 +611,18 @@ static void home_update(float dt)
     }
     bg_mix = clampf(bg_mix + dt / 0.45f, 0, 1);
     if (bg_mix >= 1) bg_prev = -1;
+
+    /* preview video starts once the selection has rested for a moment */
+    const game_t *g = &lib.games[sel];
+    int want = cfg.preview_video && g->video[0] && screen == SCR_HOME && screen_next < 0 && now_ms - sel_ms > 1100;
+    if (want && vid_game != sel) {
+        video_open(g->video);
+        vid_game = sel;
+        vid_first_ms = 0;
+    } else if (!want && vid_game >= 0) {
+        video_close();
+        vid_game = -1;
+    }
 }
 
 static void draw_home(const pad_t *pad)
@@ -571,12 +630,215 @@ static void draw_home(const pad_t *pad)
     if (!lib.count) { draw_empty(pad); return; }
     if (bg_prev >= 0) draw_backdrop_layer(bg_prev, 1.f);
     draw_backdrop_layer(bg_cur, bg_prev >= 0 ? ease_out_cubic(bg_mix) : 1.f);
+    float vu1, vv1;
+    int vw, vh;
+    const tex_t *vt = vid_game == sel ? video_frame(&vu1, &vv1, &vw, &vh) : NULL;
+    if (vt) {
+        if (!vid_first_ms) vid_first_ms = now_ms;
+        image_t im = {vt, vw, vh, vu1, vv1};
+        float u0, v0, u1, v1;
+        const float AX = 360, AW = SCREEN_W - 360, AH = SCREEN_H;
+        cover_uv(&im, AW / AH, &u0, &v0, &u1, &v1);
+        float a = ease_out_cubic((float)(now_ms - vid_first_ms) / 600.f);
+        gfx_image(vt, AX, 0, AW, AH, u0, v0, u1, v1, col_alpha(C_WHITE, a));
+    }
     draw_shades();
+    if (vt) {
+        /* preview pill */
+        char tc[32];
+        int sec = (int)video_position();
+        snprintf(tc, sizeof(tc), "%d:%02d", sec / 60, sec % 60);
+        float px = SCREEN_W - 80 - 420, py = 920;
+        gfx_rrect(px, py, 420, 56, 28, RGBA(0, 0, 0, 130));
+        draw_icon("play", px + 20, py + 15, 26, C_WHITE);
+        text_draw(fonts[F_HINT], px + 56, py + 14, "Preview", C_WHITE, 0, ALIGN_LEFT);
+        float bx = px + 170, bw = 160;
+        gfx_rrect(bx, py + 25, bw, 6, 3, RGBA(255, 255, 255, 60));
+        float len = video_length();
+        float frac = len > 0 ? clampf(video_position() / len, 0, 1) : clampf(video_position() / 30.f, 0, 1);
+        gfx_rrect(bx, py + 25, bw * frac, 6, 3, C_WHITE);
+        text_draw(fonts[F_HINT], px + 400, py + 14, tc, C_WHITE, 0, ALIGN_RIGHT);
+    }
     draw_topbar(pad);
     draw_row();
     draw_hero(pad);
     draw_cards();
     draw_home_hints(pad);
+}
+
+
+/* ---------- game + in-game menu ---------- */
+enum { QM_RESUME, QM_SAVE, QM_LOAD, QM_SHOT, QM_DISPLAY, QM_RESET, QM_EXIT, QM_COUNT };
+static int menu_open, qm_sel = QM_RESUME, qm_slot, qm_focus_slots;
+static const char *const qm_label[QM_COUNT] = {"Resume", "Save State", "Load State", "Screenshot", "Display", "Reset", "Exit Game"};
+static const char *const qm_icon[QM_COUNT] = {"play", "check", "refresh", "image", "monitor", "clock", "xmark"};
+
+static void start_game(void)
+{
+    if (!lib.count) return;
+    const game_t *g = &lib.games[sel];
+    video_close();
+    vid_game = -1;
+    int r = emu_load(g->path, g->base);
+    if (r) {
+        ui_toast("alert", "This game could not be started",
+                 r == -2 ? "The ROM file could not be read." : "The ROM file is not a supported SNES game.");
+        return;
+    }
+    config_save();
+    menu_open = 0;
+    qm_sel = QM_RESUME;
+    go_screen(SCR_GAME);
+    ui_toast("gamepad", g->title, "Press R3 (or SELECT + START) for the game menu");
+}
+
+static void slot_label(int slot, char *out, size_t n)
+{
+    long long t = emu_state_time(slot);
+    if (!t) { snprintf(out, n, "Empty"); return; }
+    time_t lt = (time_t)(t + plat_tz_offset());
+    struct tm tmv;
+    gmtime_r(&lt, &tmv);
+    static const char *mon[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+    int use24 = cfg.clock_format == CLOCK_24H || (cfg.clock_format == CLOCK_SYSTEM && plat_use_24h());
+    if (use24) snprintf(out, n, "%d %s  %02d:%02d", tmv.tm_mday, mon[tmv.tm_mon], tmv.tm_hour, tmv.tm_min);
+    else snprintf(out, n, "%d %s  %d:%02d %s", tmv.tm_mday, mon[tmv.tm_mon],
+                  tmv.tm_hour % 12 ? tmv.tm_hour % 12 : 12, tmv.tm_min, tmv.tm_hour < 12 ? "AM" : "PM");
+}
+
+static void qm_do(int item)
+{
+    char b[300], p[600];
+    switch (item) {
+    case QM_RESUME: menu_open = 0; break;
+    case QM_SAVE:
+        if (emu_save_state(qm_slot) == 0) {
+            emu_state_thumb(qm_slot, p, sizeof(p));
+            image_forget(p);
+            snprintf(b, sizeof(b), "Slot %d", qm_slot + 1);
+            ui_toast("check", "State saved", b);
+        } else ui_toast("alert", "Could not save the state", "Check that the hard drive has free space.");
+        break;
+    case QM_LOAD:
+        if (!emu_state_exists(qm_slot)) {
+            snprintf(b, sizeof(b), "Slot %d has no saved state yet.", qm_slot + 1);
+            ui_toast("info", "Nothing to load", b);
+        } else if (emu_load_state(qm_slot) == 0) {
+            snprintf(b, sizeof(b), "Slot %d", qm_slot + 1);
+            ui_toast("refresh", "State loaded", b);
+            menu_open = 0;
+        } else ui_toast("alert", "Could not load the state", "The save file is damaged or from another version.");
+        break;
+    case QM_SHOT:
+        if (emu_screenshot(p, sizeof(p)) == 0) {
+            const char *fn = strrchr(p, '/');
+            ui_toast("image", "Screenshot saved", fn ? fn + 1 : p);
+        } else ui_toast("alert", "Could not save the screenshot", NULL);
+        break;
+    case QM_DISPLAY: {
+        static const char *const names[] = {"4:3 (TV)", "8:7 (Pixel perfect)", "Stretch"};
+        cfg.aspect = (cfg.aspect + 1) % 3;
+        config_save();
+        ui_toast("monitor", "Aspect ratio", names[cfg.aspect]);
+        break;
+    }
+    case QM_RESET: emu_reset(); menu_open = 0; ui_toast("clock", "Game reset", NULL); break;
+    case QM_EXIT:
+        emu_unload();
+        for (int sl = 0; sl < EMU_SLOTS; sl++) { /* home card picks up new thumbnails */
+            snprintf(p, sizeof(p), "%s/saves/%s.state%d.png", plat_data_dir(), lib.games[sel].base, sl + 1);
+            image_forget(p);
+        }
+        menu_open = 0;
+        go_screen(SCR_HOME);
+        break;
+    }
+}
+
+static void game_input(const pad_t *pad)
+{
+    uint32_t p = pad->pressed, h = pad->held;
+    int combo = (p & BTN_R3) || ((h & BTN_SELECT) && (h & BTN_START) && (p & (BTN_SELECT | BTN_START)));
+    if (!menu_open) {
+        if (combo) { menu_open = 1; qm_sel = QM_RESUME; qm_focus_slots = 0; plat_audio_clear(); }
+        return;
+    }
+    if (combo || (p & back_btn(pad))) { menu_open = 0; return; }
+    if (qm_focus_slots) {
+        if (p & BTN_LEFT && qm_slot > 0) qm_slot--;
+        if (p & BTN_RIGHT && qm_slot < EMU_SLOTS - 1) qm_slot++;
+        if (p & BTN_DOWN) qm_focus_slots = 0;
+        if (p & confirm_btn(pad)) qm_do(emu_state_exists(qm_slot) ? QM_LOAD : QM_SAVE);
+        return;
+    }
+    if (p & BTN_LEFT && qm_sel > 0) qm_sel--;
+    if (p & BTN_RIGHT && qm_sel < QM_COUNT - 1) qm_sel++;
+    if (p & BTN_UP) qm_focus_slots = 1;
+    if (p & confirm_btn(pad)) qm_do(qm_sel);
+}
+
+static void draw_game(const pad_t *pad)
+{
+    emu_draw(0, 0, SCREEN_W, SCREEN_H, 1.f);
+    if (!menu_open) return;
+
+    /* dim the paused game, PS5 control-centre style */
+    gfx_rect(0, 0, SCREEN_W, SCREEN_H, RGBA(0, 0, 0, 120));
+    gfx_rect4(0, 420, SCREEN_W, 660, RGBA(0, 0, 0, 0), RGBA(0, 0, 0, 0), RGBA(0, 0, 0, 220), RGBA(0, 0, 0, 220));
+    gfx_rect4(0, 0, SCREEN_W, 240, RGBA(0, 0, 0, 170), RGBA(0, 0, 0, 170), RGBA(0, 0, 0, 0), RGBA(0, 0, 0, 0));
+
+    const game_t *g = &lib.games[sel];
+    text_draw_fit(fonts[F_TOAST_T], 96, 56, g->title, C_WHITE, 1200, ALIGN_LEFT);
+    char sub[64];
+    snprintf(sub, sizeof(sub), "Paused  ·  Slot %d selected", qm_slot + 1);
+    text_draw(fonts[F_META], 96, 96, sub, C_DIM, 0, ALIGN_LEFT);
+    if (cfg.show_clock) {
+        char t[32];
+        clock_text(t, sizeof(t));
+        text_draw(fonts[F_CLOCK], SCREEN_W - 96, 58, t, C_WHITE, 0, ALIGN_RIGHT);
+    }
+
+    /* save slots */
+    for (int sl = 0; sl < EMU_SLOTS; sl++) {
+        float x = 96 + sl * 322, y = 410, w = 300, ih = 262;
+        int foc = qm_focus_slots && sl == qm_slot;
+        int chosen = sl == qm_slot;
+        gfx_shadow(x, y + 8, w, ih + 76, 20, 18, RGBA(0, 0, 0, 120));
+        gfx_rrect(x, y, w, ih + 76, 20, RGBA(30, 34, 48, 235));
+        char tp[600];
+        emu_state_thumb(sl, tp, sizeof(tp));
+        image_t im;
+        if (emu_state_exists(sl) && image_get(tp, IMG_COVER, &im))
+            gfx_image_rr(im.tex, x, y, w, ih, 20, 0, 0, im.u1, im.v1, C_WHITE);
+        else {
+            gfx_rrect(x, y, w, ih, 20, RGBA(255, 255, 255, 12));
+            draw_icon("check", x + w / 2 - 24, y + ih / 2 - 24, 48, RGBA(255, 255, 255, 30));
+        }
+        char l[32], d[64];
+        snprintf(l, sizeof(l), "Slot %d", sl + 1);
+        slot_label(sl, d, sizeof(d));
+        text_draw(fonts[F_TOAST_T], x + 18, y + ih + 10, l, C_WHITE, 0, ALIGN_LEFT);
+        text_draw(fonts[F_SUB], x + 18, y + ih + 42, d, C_DIM, 0, ALIGN_LEFT);
+        if (foc) gfx_rrect_stroke(x - 6, y - 6, w + 12, ih + 88, 26, 4, C_WHITE);
+        else if (chosen) gfx_rrect_stroke(x - 2, y - 2, w + 4, ih + 80, 22, 2, RGBA(255, 255, 255, 120));
+    }
+
+    /* control bar */
+    float bx = 96, by = 800, bw = SCREEN_W - 192, bh = 220;
+    gfx_rrect(bx, by, bw, bh, 30, RGBA(28, 32, 46, 235));
+    gfx_rrect_stroke(bx, by, bw, bh, 30, 1, RGBA(255, 255, 255, 26));
+    for (int i = 0; i < QM_COUNT; i++) {
+        float x = bx + 34 + i * 208, y = by + 35, w = 190, h = 150;
+        int on = !qm_focus_slots && i == qm_sel;
+        gfx_rrect(x, y, w, h, 22, on ? C_WHITE : RGBA(255, 255, 255, 18));
+        rgba_t c = on ? RGBA(0, 0, 0, 255) : C_WHITE;
+        draw_icon(qm_icon[i], x + w / 2 - 20, y + 30, 40, c);
+        const char *lab = qm_label[i];
+        text_draw(fonts[F_HINT], x + w / 2, y + 92, lab, c, 0, ALIGN_CENTER);
+    }
+    float hx = SCREEN_W - 96 - hints_width((const char *const[]){"Select", "Resume"}, 2);
+    hx += draw_hint(hx, 1030 - 4, confirm_icon(pad), "Select");
+    draw_hint(hx, 1030 - 4, back_icon(pad), "Resume");
 }
 
 /* ---------- settings ---------- */
@@ -699,27 +961,34 @@ void ui_frame(const pad_t *pad, float dt)
 {
     now_ms = plat_ms();
     images_update();
+    video_update();
 
     if (screen_next >= 0) {
         fade -= dt / 0.18f;
         if (fade <= 0) {
             fade = 0;
             if (screen_next == SCR_SETTINGS) { refresh_library_rows(); set_focus_panel = 0; }
-            if (screen_next == SCR_HOME) focus = FOC_TILES;
+            if (screen_next == SCR_HOME) { focus = FOC_TILES; sel_ms = now_ms; }
             screen = screen_next;
             screen_next = -1;
         }
     } else {
         if (fade < 1) fade = clampf(fade + dt / 0.22f, 0, 1);
-        if (screen == SCR_HOME) home_input(pad); else settings_input(pad);
+        if (screen == SCR_HOME) home_input(pad);
+        else if (screen == SCR_GAME) game_input(pad);
+        else settings_input(pad);
     }
+    /* the game keeps running while its screen fades in */
+    if (screen == SCR_GAME && !menu_open && emu_loaded()) emu_run_frame(pad);
     if (screen == SCR_HOME) home_update(dt);
     if (lib.count && cfg.last_game != sel) cfg.last_game = sel; /* saved with settings / on exit */
 
     plat_begin_frame(C_BG);
     gfx_begin();
     gfx_push_alpha(ease_out_cubic(fade));
-    if (screen == SCR_HOME) draw_home(pad); else draw_settings(pad);
+    if (screen == SCR_HOME) draw_home(pad);
+    else if (screen == SCR_GAME) draw_game(pad);
+    else draw_settings(pad);
     gfx_pop_alpha();
     draw_toast();
     gfx_flush();

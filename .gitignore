@@ -4,3 +4,4 @@ build-host/
 *.self
 *.pkg
 *.map
+build-core/

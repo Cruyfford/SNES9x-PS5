@@ -20,13 +20,14 @@ SOURCES		:=	source
 INCLUDES	:=	source $(PORTLIBS)/include/freetype2
 
 # plat_host.c is the PC preview backend; it compiles to nothing on PS3
+# the emulator core is built by tools/ci/build-core.sh ps3
 CFLAGS		=	-O2 -Wall -mcpu=cell -std=gnu99 -D__PS3__ $(MACHDEP) $(INCLUDE)
 CXXFLAGS	=	$(CFLAGS)
 LDFLAGS		=	$(MACHDEP) -Wl,-Map,$(notdir $@).map
 
-LIBS		:=	-ltiny3d -lfreetype -lz -lgcm_sys -lrsx -lsysutil -lio -lsysmodule -lrt -llv2 -lm
+LIBS		:=	-lsnes9x2010 -ltiny3d -lfreetype -ltheoradec -logg -lz -laudio -lgcm_sys -lrsx -lsysutil -lio -lsysmodule -lsysfs -lrt -llv2 -lm
 
-LIBDIRS		:=	$(PORTLIBS)
+LIBDIRS		:=	$(PORTLIBS) $(CURDIR)/build-core/ps3
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 
@@ -57,8 +58,11 @@ pkgroot:
 	@cp -r assets/fonts assets/icons $(PKGFILES)/USRDIR/
 	@cp assets/README-roms.txt $(PKGFILES)/USRDIR/roms/README.txt
 	@cp assets/README-art.txt $(PKGFILES)/USRDIR/art/README.txt
+	@cp -r assets/licenses $(PKGFILES)/USRDIR/
 
-pkg: $(BUILD) pkgroot $(OUTPUT).pkg
+pkg: $(BUILD) pkgroot
+	@rm -f $(OUTPUT).pkg $(OUTPUT).gnpdrm.pkg
+	@$(MAKE) --no-print-directory $(OUTPUT).pkg
 
 clean:
 	@echo clean ...

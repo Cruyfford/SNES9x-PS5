@@ -83,14 +83,41 @@ void plat_gpu_sync(void)
 
 /* ---- input ---- */
 static uint32_t prev_held;
+static uint32_t port_state[4];
 static uint64_t repeat_at;
 static int cross_enter = -1;
+
+static uint32_t decode_pad(const padData *d)
+{
+    uint32_t held = 0;
+    if (d->BTN_UP) held |= BTN_UP;
+    if (d->BTN_DOWN) held |= BTN_DOWN;
+    if (d->BTN_LEFT) held |= BTN_LEFT;
+    if (d->BTN_RIGHT) held |= BTN_RIGHT;
+    if (d->BTN_CROSS) held |= BTN_CROSS;
+    if (d->BTN_CIRCLE) held |= BTN_CIRCLE;
+    if (d->BTN_SQUARE) held |= BTN_SQUARE;
+    if (d->BTN_TRIANGLE) held |= BTN_TRIANGLE;
+    if (d->BTN_L1) held |= BTN_L1;
+    if (d->BTN_R1) held |= BTN_R1;
+    if (d->BTN_L2) held |= BTN_L2;
+    if (d->BTN_R2) held |= BTN_R2;
+    if (d->BTN_L3) held |= BTN_L3;
+    if (d->BTN_R3) held |= BTN_R3;
+    if (d->BTN_START) held |= BTN_START;
+    if (d->BTN_SELECT) held |= BTN_SELECT;
+    /* left stick acts as d-pad */
+    if (d->ANA_L_H < 40) held |= BTN_LEFT;
+    if (d->ANA_L_H > 215) held |= BTN_RIGHT;
+    if (d->ANA_L_V < 40) held |= BTN_UP;
+    if (d->ANA_L_V > 215) held |= BTN_DOWN;
+    return held;
+}
 
 void plat_read_pad(pad_t *pad)
 {
     padInfo info;
     padData d;
-    uint32_t held = 0;
 
     if (cross_enter < 0) {
         s32 v = 1;
@@ -98,39 +125,18 @@ void plat_read_pad(pad_t *pad)
         cross_enter = v ? 1 : 0;
     }
 
+    /* controllers keep their order: the n-th connected pad is player n */
     ioPadGetInfo(&info);
-    for (int i = 0; i < MAX_PADS; i++) {
+    int player = 0;
+    for (int i = 0; i < MAX_PADS && player < 4; i++) {
         if (!info.status[i]) continue;
         memset(&d, 0, sizeof(d));
-        if (ioPadGetData(i, &d) != 0 || d.len == 0) {
-            /* no new data: keep previous state for this frame */
-            held |= prev_held;
-            continue;
-        }
-        if (d.BTN_UP) held |= BTN_UP;
-        if (d.BTN_DOWN) held |= BTN_DOWN;
-        if (d.BTN_LEFT) held |= BTN_LEFT;
-        if (d.BTN_RIGHT) held |= BTN_RIGHT;
-        if (d.BTN_CROSS) held |= BTN_CROSS;
-        if (d.BTN_CIRCLE) held |= BTN_CIRCLE;
-        if (d.BTN_SQUARE) held |= BTN_SQUARE;
-        if (d.BTN_TRIANGLE) held |= BTN_TRIANGLE;
-        if (d.BTN_L1) held |= BTN_L1;
-        if (d.BTN_R1) held |= BTN_R1;
-        if (d.BTN_L2) held |= BTN_L2;
-        if (d.BTN_R2) held |= BTN_R2;
-        if (d.BTN_L3) held |= BTN_L3;
-        if (d.BTN_R3) held |= BTN_R3;
-        if (d.BTN_START) held |= BTN_START;
-        if (d.BTN_SELECT) held |= BTN_SELECT;
-        /* left stick acts as d-pad */
-        if (d.ANA_L_H < 40) held |= BTN_LEFT;
-        if (d.ANA_L_H > 215) held |= BTN_RIGHT;
-        if (d.ANA_L_V < 40) held |= BTN_UP;
-        if (d.ANA_L_V > 215) held |= BTN_DOWN;
-        break; /* first connected pad drives the menu */
+        if (ioPadGetData(i, &d) == 0 && d.len > 0) port_state[player] = decode_pad(&d);
+        player++;
     }
+    for (int p = player; p < 4; p++) port_state[p] = 0;
 
+    uint32_t held = port_state[0];
     uint32_t pressed = held & ~prev_held;
     uint64_t now = plat_ms();
     const uint32_t dirs = BTN_UP | BTN_DOWN | BTN_LEFT | BTN_RIGHT | BTN_L1 | BTN_R1;
@@ -144,7 +150,83 @@ void plat_read_pad(pad_t *pad)
     pad->held = held;
     pad->pressed = pressed;
     pad->cross_is_enter = cross_enter;
+    for (int p = 0; p < 4; p++) pad->port[p] = port_state[p];
 }
+
+/* ---- audio ----
+ * The emulator pushes float stereo frames into a ring; a thread copies them
+ * into the hardware port blocks as the hardware advances. */
+#include <audio/audio.h>
+#define RING_FRAMES 16384
+static float ring[RING_FRAMES * 2];
+static volatile uint32_t ring_w, ring_r;
+static audioPortConfig aconf;
+static u32 aport;
+static int audio_ok;
+
+static void audio_thread(void *arg)
+{
+    (void)arg;
+    u64 *hw = (u64 *)(u64)aconf.readIndex;
+    float *base = (float *)(u64)aconf.audioDataStart;
+    u32 nblocks = (u32)aconf.numBlocks;
+    u32 next = 1;
+    for (;;) {
+        u32 cur = (u32)*hw;
+        /* keep 3 blocks (16 ms) queued ahead of the hardware */
+        while (((next + nblocks - cur) % nblocks) < 4) {
+            float *dst = base + 2 * AUDIO_BLOCK_SAMPLES * next;
+            for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
+                if (ring_r != ring_w) {
+                    uint32_t r = ring_r % RING_FRAMES;
+                    dst[i * 2] = ring[r * 2];
+                    dst[i * 2 + 1] = ring[r * 2 + 1];
+                    __sync_synchronize();
+                    ring_r++;
+                } else {
+                    dst[i * 2] = dst[i * 2 + 1] = 0.f;
+                }
+            }
+            next = (next + 1) % nblocks;
+        }
+        sysUsleep(2000);
+    }
+}
+
+int plat_audio_init(void)
+{
+    audioPortParam p;
+    if (audio_ok) return 0;
+    if (audioInit() != 0) return -1;
+    memset(&p, 0, sizeof(p));
+    p.numChannels = AUDIO_PORT_2CH;
+    p.numBlocks = AUDIO_BLOCK_16;
+    p.attrib = 0;
+    p.level = 1.0f;
+    if (audioPortOpen(&p, &aport) != 0) return -1;
+    if (audioGetPortConfig(aport, &aconf) != 0) return -1;
+    if (audioPortStart(aport) != 0) return -1;
+    audio_ok = 1;
+    sys_ppu_thread_t id;
+    sysThreadCreate(&id, audio_thread, NULL, 900, 64 * 1024, 0, (char *)"audio");
+    return 0;
+}
+
+void plat_audio_write(const float *stereo, int frames)
+{
+    if (!audio_ok) return;
+    for (int i = 0; i < frames; i++) {
+        if (ring_w - ring_r >= RING_FRAMES - 1) break; /* full: drop */
+        uint32_t w = ring_w % RING_FRAMES;
+        ring[w * 2] = stereo[i * 2];
+        ring[w * 2 + 1] = stereo[i * 2 + 1];
+        __sync_synchronize();
+        ring_w++;
+    }
+}
+
+int plat_audio_buffered(void) { return (int)(ring_w - ring_r); }
+void plat_audio_clear(void) { ring_r = ring_w; }
 
 /* ---- time ---- */
 uint64_t plat_ms(void)
@@ -164,6 +246,14 @@ void plat_local_time(clock_t2 *out)
     gmtime_r(&t, &tmv);
     out->year = tmv.tm_year + 1900; out->month = tmv.tm_mon + 1; out->day = tmv.tm_mday;
     out->hour = tmv.tm_hour; out->minute = tmv.tm_min; out->second = tmv.tm_sec;
+}
+
+long plat_tz_offset(void)
+{
+    s32 tz = 0, dst = 0;
+    sysUtilGetSystemParamInt(SYSUTIL_SYSTEMPARAM_ID_TIMEZONE, &tz);
+    sysUtilGetSystemParamInt(SYSUTIL_SYSTEMPARAM_ID_SUMMERTIME, &dst);
+    return (long)tz * 60 + (dst ? 3600 : 0);
 }
 
 int plat_use_24h(void)

@@ -3,6 +3,8 @@
 #include "images.h"
 #include "config.h"
 #include "ui.h"
+#include "emu.h"
+#include "video.h"
 #include <stdio.h>
 
 #ifndef __PS3__
@@ -24,6 +26,8 @@ int main(int argc, char **argv)
     if (plat_init()) return 1;
     config_load();
     if (font_system_init() || images_init(sync_images)) { plat_log("init failed"); return 1; }
+    if (video_init(sync_images)) plat_log("video init failed");
+    if (emu_init()) plat_log("emulator init failed");
     if (ui_init()) { plat_log("ui init failed (fonts missing?)"); return 1; }
 
     uint64_t last = plat_ms();
@@ -37,6 +41,7 @@ int main(int argc, char **argv)
         last = now;
         ui_frame(&pad, dt);
     }
+    emu_unload();
     config_save();
     plat_shutdown();
     return 0;

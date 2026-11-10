@@ -11,6 +11,11 @@ typedef struct {
     int backdrop;       /* BACKDROP_* */
     int sort;           /* SORT_* */
     int last_game;      /* index restored on start */
+    int aspect;         /* ASPECT_* in emu.h */
+    int smooth;         /* bilinear filtering of the game picture */
+    int volume;         /* 0 mute .. 4 full */
+    int swap_ab;        /* Cross = A instead of B */
+    int preview_video;  /* play art/video clips on the home screen */
 } config_t;
 
 extern config_t cfg;

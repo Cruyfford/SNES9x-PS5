@@ -40,6 +40,7 @@ typedef struct {
     uint32_t held;      /* currently down */
     uint32_t pressed;   /* went down this frame, plus auto-repeat for d-pad */
     int cross_is_enter; /* 1 = Cross confirms (Western), 0 = Circle confirms (Japan) */
+    uint32_t port[4];   /* raw held buttons of each controller (for the game) */
 } pad_t;
 
 typedef struct {
@@ -55,6 +56,7 @@ void plat_read_pad(pad_t *pad);
 uint64_t plat_ms(void);               /* monotonic milliseconds */
 void plat_local_time(clock_t2 *out);
 int  plat_use_24h(void);
+long plat_tz_offset(void);             /* seconds to add to UTC for local time */
 
 /* paths */
 const char *plat_app_dir(void);       /* folder holding fonts/, icons/ ... */
@@ -68,6 +70,13 @@ void plat_gpu_sync(void);
 
 /* draw an indexed-free triangle list (n multiple of 3) */
 void plat_draw_tris(const vtx_t *v, int n, const tex_t *tex);
+
+/* audio: interleaved stereo float at 48 kHz, pushed by the emulator */
+#define AUDIO_RATE 48000
+int  plat_audio_init(void);
+void plat_audio_write(const float *stereo, int frames);
+int  plat_audio_buffered(void);      /* frames waiting to be played */
+void plat_audio_clear(void);
 
 /* threads (image loading runs off the UI thread) */
 typedef void (*plat_thread_fn)(void *arg);

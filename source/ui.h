@@ -4,7 +4,7 @@
 #include "platform.h"
 
 #define APP_TITLE   "SNES9x PS5"
-#define APP_VERSION "0.1.0"
+#define APP_VERSION "0.2.0"
 
 int  ui_init(void);
 void ui_frame(const pad_t *pad, float dt);

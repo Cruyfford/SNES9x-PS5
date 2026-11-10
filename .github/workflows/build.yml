@@ -14,7 +14,7 @@ jobs:
       - name: Install host packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgmp-dev libssl-dev python3-dev python3-setuptools libfreetype-dev
+          sudo apt-get install -y libgmp-dev libssl-dev python3-dev python3-setuptools libfreetype-dev libtheora-dev libogg-dev
 
       - name: Cache toolchain
         id: cache
@@ -31,10 +31,13 @@ jobs:
           export PS3DEV="${{ runner.temp }}/ps3/ps3dev"
           export PSL1GHT="$PS3DEV"
           export PATH="$PS3DEV/bin:$PS3DEV/ppu/bin:$PATH"
+          tools/ci/build-core.sh ps3
           make pkg
 
       - name: Check the PC preview still builds
-        run: tools/host/build.sh
+        run: |
+          tools/ci/build-core.sh host
+          tools/host/build.sh
 
       - name: Upload PKG
         uses: actions/upload-artifact@v4
